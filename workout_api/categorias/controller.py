@@ -1,11 +1,16 @@
 from uuid import uuid4
+from typing import Optional
 from fastapi import APIRouter, Body, HTTPException, status
 from pydantic import UUID4
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.future import select
+
+from fastapi_pagination import Page, paginate
+
 from workout_api.categorias.schemas import CategoriaIn, CategoriaOut
 from workout_api.categorias.models import CategoriaModel
 
 from workout_api.contrib.dependencies import DatabaseDependency
-from sqlalchemy.future import select
 
 router = APIRouter()
 
@@ -22,8 +27,21 @@ async def post(
     categoria_out = CategoriaOut(id=uuid4(), **categoria_in.model_dump())
     categoria_model = CategoriaModel(**categoria_out.model_dump())
     
-    db_session.add(categoria_model)
-    await db_session.commit()
+    try:
+        db_session.add(categoria_model)
+        await db_session.commit()
+    except IntegrityError:
+        await db_session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_303_SEE_OTHER,
+            detail=f"Já existe uma categoria cadastrada com o nome: {categoria_in.nome}"
+        )
+    except Exception:
+        await db_session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro ao inserir a categoria no banco"
+        )
 
     return categoria_out
     
@@ -32,12 +50,20 @@ async def post(
     '/', 
     summary='Consultar todas as Categorias',
     status_code=status.HTTP_200_OK,
-    response_model=list[CategoriaOut],
+    response_model=Page[CategoriaOut],
 )
-async def query(db_session: DatabaseDependency) -> list[CategoriaOut]:
-    categorias: list[CategoriaOut] = (await db_session.execute(select(CategoriaModel))).scalars().all()
+async def query(
+    db_session: DatabaseDependency,
+    nome: Optional[str] = None
+) -> Page[CategoriaOut]:
+    stmt = select(CategoriaModel)
+
+    if nome:
+        stmt = stmt.filter(CategoriaModel.nome.ilike(f"%{nome}%"))
+
+    categorias = (await db_session.execute(stmt)).scalars().all()
     
-    return categorias
+    return paginate(categorias)
 
 
 @router.get(
