@@ -1,7 +1,11 @@
 from datetime import datetime
 from uuid import uuid4
+from typing import Optional
 from fastapi import APIRouter, Body, HTTPException, status
 from pydantic import UUID4
+from sqlalchemy.exc import IntegrityError
+
+from fastapi_pagination import Page, paginate
 
 from workout_api.atleta.schemas import AtletaIn, AtletaOut, AtletaUpdate
 from workout_api.atleta.models import AtletaModel
@@ -54,7 +58,14 @@ async def post(
         
         db_session.add(atleta_model)
         await db_session.commit()
+    except IntegrityError:
+        await db_session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_303_SEE_OTHER,
+            detail=f"Já existe um atleta cadastrado com o cpf: {atleta_in.cpf}"
+        )
     except Exception:
+        await db_session.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
             detail='Ocorreu um erro ao inserir os dados no banco'
@@ -67,12 +78,22 @@ async def post(
     '/', 
     summary='Consultar todos os Atletas',
     status_code=status.HTTP_200_OK,
-    response_model=list[AtletaOut],
+    response_model=Page[AtletaOut],
 )
-async def query(db_session: DatabaseDependency) -> list[AtletaOut]:
-    atletas: list[AtletaOut] = (await db_session.execute(select(AtletaModel))).scalars().all()
-    
-    return [AtletaOut.model_validate(atleta) for atleta in atletas]
+async def query(
+    db_session: DatabaseDependency,
+    nome: Optional[str] = None,
+    cpf: Optional[str] = None
+) -> Page[AtletaOut]:
+    stmt = select(AtletaModel)
+
+    if nome:
+        stmt = stmt.filter(AtletaModel.nome.ilike(f"%{nome}%"))
+    if cpf:
+        stmt = stmt.filter(AtletaModel.cpf == cpf)
+
+    atletas = (await db_session.execute(stmt)).scalars().all()
+    return paginate([AtletaOut.model_validate(atleta) for atleta in atletas])
 
 
 @router.get(
